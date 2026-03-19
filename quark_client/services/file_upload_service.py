@@ -41,7 +41,6 @@ class FileUploadService:
 
     def upload_file(
             self,
-            file_name: str,
             file_path: str,
             pdir_fid: str = "0",
             progress_callback: Optional[Callable[[int], None]] = None,
@@ -54,6 +53,7 @@ class FileUploadService:
         :param progress_callback: 进度回调函数，参数为当前进度百分比（0-100）
         :return: (status, 文件ID/错误原因)
         """
+        file_name = os.path.basename(file_path)
 
         mime_type, _ = mimetypes.guess_type(file_name)
         if not mime_type:

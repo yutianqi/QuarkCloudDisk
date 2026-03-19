@@ -18,7 +18,7 @@ with QuarkClient() as client:
         client.login()  # 自动打开二维码登录
 
     # client.upload_file("QrCode.jpg", progress_callback=progress_callback)
-    client.upload_file("/home/ubuntu/code/FilesCompare/data/remote.dajun.db.gz", progress_callback=progress_callback)
+    print(client.upload_file("/home/ubuntu/code/FilesCompare/data/remote.dajun.db.gz", progress_callback=progress_callback))
     print("finished uploading")
 
 
