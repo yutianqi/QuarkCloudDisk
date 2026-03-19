@@ -3,16 +3,6 @@
 文件上传服务
 """
 
-import hashlib
-import mimetypes
-import time
-import base64
-import json
-import struct
-from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
-from datetime import datetime, timezone
-import requests
 from ..core.api_client import QuarkAPIClient
 from ..exceptions import APIError
 
@@ -47,7 +37,6 @@ class FileUploadService:
     ) -> Tuple[bool, Any]:
         """
         完整的文件上传流程
-        :param file_name: 文件名
         :param file_path: 文件路径
         :param pdir_fid: 父目录ID，默认为0（根目录）
         :param progress_callback: 进度回调函数，参数为当前进度百分比（0-100）
@@ -118,9 +107,11 @@ class FileUploadService:
         status, commit_resp = self.up_commit(pre_resp, etags)
         if not status:
             return False, f"提交上传失败: {commit_resp}"
+
         status, finish_resp = self.up_finish(pre_resp)
         if not status:
             return False, f"完成上传失败: {finish_resp}"
+
         return True, finish_resp
 
     def up_pre(
@@ -241,6 +232,45 @@ class FileUploadService:
         )
         return True, response
 
+    def get_xml_body(
+            self,
+            etags: List[str]):
+        xml_parts = []
+        for i, etag in enumerate(etags, 1):
+            xml_parts.append(
+                f"<Part><PartNumber>{i}</PartNumber><ETag>{etag}</ETag></Part>"
+            )
+        xml_body = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n{"".join(xml_parts)}\n</CompleteMultipartUpload>"""
+        return xml_body
+
+    def get_content_hash(
+            self,
+            callback: str,
+            xml_body: str):
+        md5 = hashlib.md5()
+        md5.update(xml_body.encode("utf-8"))
+        content_md5 = base64.b64encode(md5.digest()).decode("utf-8")
+        callback_json = json.dumps(callback)
+        callback_b64 = base64.b64encode(callback_json.encode("utf-8")).decode("utf-8")
+        return content_md5, callback_b64
+
+    def get_all_auth_resp(
+            self,
+            pre: Dict[str, Any],
+            content_md5: str,
+            callback_b64: str,
+            now
+    ):
+        auth_meta = f"POST\n{content_md5}\napplication/xml\n{now}\nx-oss-callback:{callback_b64}\nx-oss-date:{now}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{pre['data']['bucket']}/{pre['data']['obj_key']}?uploadId={pre['data']['upload_id']}"
+        auth_data = {
+            "auth_info": pre["data"]["auth_info"],
+            "auth_meta": auth_meta,
+            "task_id": pre["data"]["task_id"],
+        }
+
+        auth_resp = self.api_client.post("file/upload/auth", json_data=auth_data)
+        return auth_resp
+
     def up_commit(
             self,
             pre: Dict[str, Any],
@@ -253,25 +283,9 @@ class FileUploadService:
         :return: (status, None/错误原因)
         """
         now = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
-        xml_parts = []
-        for i, etag in enumerate(etags, 1):
-            xml_parts.append(
-                f"<Part><PartNumber>{i}</PartNumber><ETag>{etag}</ETag></Part>"
-            )
-        xml_body = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n{"".join(xml_parts)}\n</CompleteMultipartUpload>"""
-        md5 = hashlib.md5()
-        md5.update(xml_body.encode("utf-8"))
-        content_md5 = base64.b64encode(md5.digest()).decode("utf-8")
-        callback_json = json.dumps(pre["data"]["callback"])
-        callback_b64 = base64.b64encode(callback_json.encode("utf-8")).decode("utf-8")
-        auth_meta = f"POST\n{content_md5}\napplication/xml\n{now}\nx-oss-callback:{callback_b64}\nx-oss-date:{now}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{pre['data']['bucket']}/{pre['data']['obj_key']}?uploadId={pre['data']['upload_id']}"
-        auth_data = {
-            "auth_info": pre["data"]["auth_info"],
-            "auth_meta": auth_meta,
-            "task_id": pre["data"]["task_id"],
-        }
-
-        auth_resp = self.api_client.post("file/upload/auth", json_data=auth_data)
+        xml_body = self.get_xml_body(etags)
+        content_md5, callback_b64 = self.get_content_hash(pre["data"]["callback"], xml_body)
+        auth_resp = self.get_all_auth_resp(pre, content_md5, callback_b64, now)
 
         if not auth_resp.get('status'):
             raise APIError(f"更新文件哈希失败: {auth_resp.get('message', '未知错误')}")
@@ -296,10 +310,7 @@ class FileUploadService:
         except requests.exceptions.RequestException as e:
             return False, str(e)
 
-    def up_finish(
-            self,
-            pre: Dict[str, Any],
-    ) -> Tuple[bool, Any]:
+    def up_finish(self, pre: Dict[str, Any]) -> Tuple[bool, Any]:
         """
         完成上传流程
         :param pre: 预上传响应数据
@@ -311,7 +322,6 @@ class FileUploadService:
             "file/upload/finish",
             json_data=data
         )
-
         if not response.get('status'):
             raise APIError(f"完成上传失败: {response.get('message', '未知错误')}")
         return True, response.get("data", {})
