@@ -50,7 +50,7 @@ class FileUploadService:
         try:
             file_size = os.path.getsize(file_path)
         except Exception as e:
-            return False, f"无法获取文件大小: {str(e)}"
+            raise ValueError(f"无法获取文件大小: {str(e)}")
 
         md5_hash = hashlib.md5()
         sha1_hash = hashlib.sha1()
@@ -63,25 +63,27 @@ class FileUploadService:
                     md5_hash.update(chunk)
                     sha1_hash.update(chunk)
         except Exception as e:
-            return False, f"读取文件计算哈希失败: {str(e)}"
+            raise ValueError(f"读取文件计算哈希失败: {str(e)}")
         md5_hex = md5_hash.hexdigest()
         sha1_hex = sha1_hash.hexdigest()
 
         # 预上传
         status, pre_resp = self.up_pre(file_name, mime_type, file_size, pdir_fid)
         if not status:
-            return False, f"预上传失败: {pre_resp}"
+            raise RuntimeError(f"预上传失败: {pre_resp}")
 
         # 更新hash
         status, up_hash_result = self.up_hash(
             md5_hex, sha1_hex, pre_resp.get("data", {}).get("task_id", "")
         )
         if not status:
-            return False, f"哈希验证失败: {up_hash_result}"
-        if up_hash_result.get("finish") is True:
-            return True, up_hash_result
+            raise RuntimeError(f"更新哈希失败: {up_hash_result}")
 
-        #
+        # TODO: 需要确认这个是云秒传吗？
+        if up_hash_result.get("finish") is True:
+            return up_hash_result
+
+        # 分块上传
         part_size = pre_resp.get("metadata", {}).get("part_size", 0)
         etags: List[str] = []
         part_number = 1
@@ -94,7 +96,7 @@ class FileUploadService:
                         break
                     status, etag = self.up_part(pre_resp, mime_type, part_number, chunk)
                     if not status:
-                        return False, f"分片{part_number}上传失败: {etag}"
+                        raise RuntimeError(f"分片{part_number}上传失败: {etag}")
                     etags.append(etag)
                     part_number += 1
                     uploaded += len(chunk)
@@ -102,17 +104,18 @@ class FileUploadService:
                         progress = min(100, int(uploaded / file_size * 100))
                         progress_callback(progress)
         except Exception as e:
-            return False, f"读取文件分片上传失败: {str(e)}"
+            raise RuntimeError(f"分片{part_number}上传失败: {etag}")
 
+        # 提交
         status, commit_resp = self.up_commit(pre_resp, etags)
         if not status:
-            return False, f"提交上传失败: {commit_resp}"
+            raise RuntimeError(f"提交失败: {commit_resp}")
 
         status, finish_resp = self.up_finish(pre_resp)
         if not status:
-            return False, f"完成上传失败: {finish_resp}"
+            raise RuntimeError(f"完成上传失败: {commit_resp}")
 
-        return True, finish_resp
+        return finish_resp
 
     def up_pre(
             self,
